@@ -1,0 +1,506 @@
+{
+  "name": "Meeting scheduler with calendar availability",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Meeting scheduler\nTakes a plain-language request (\"45 minutes on Thursday afternoon to review the proposal\"). An LLM turns it into a duration and a time window with a fixed schema; Google Calendar returns the busy slots; a Code node finds the first free slot in working hours.\n\nIf one is free, the event is created and confirmed by email (201). Otherwise up to three alternatives are emailed (200). Vague requests get a 422 asking for a day.",
+        "height": 280,
+        "width": 600,
+        "color": 7
+      },
+      "id": "685b8d04-4a75-54fe-8bda-5196153c85b1",
+      "name": "About this workflow",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "schedule-meeting",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "b7fbc8b7-b191-5251-9543-edb907025d41",
+      "name": "Meeting request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "1aaa6080-15c7-592b-89ec-d5147010d9f7"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Current time: {{ $now.toISO() }}\nWorking hours: 09:00-17:00 UTC, Monday to Friday.\nRequester: {{ $json.body.requester_email }}\nRequest: {{ $json.body.request_text }}",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "Extract a meeting request. duration_minutes defaults to 30. window_start and window_end are ISO 8601 timestamps covering the day(s) and part of day the requester asked for (morning 09:00-12:00, afternoon 13:00-17:00, otherwise the whole working day). Resolve relative dates against the current time. If no day or date can be inferred, set needs_clarification to true. topic is a short subject line."
+            }
+          ]
+        }
+      },
+      "id": "d46a3af9-bf73-53fc-a01a-a23ced9e3bab",
+      "name": "Parse request",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.4,
+      "position": [
+        240,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "options": {
+          "temperature": 0
+        }
+      },
+      "id": "d43abf04-eeae-5112-b6ea-b96a3b75c1ea",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [
+        140,
+        560
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": null,
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"title\": \"meeting_request\",\n  \"type\": \"object\",\n  \"additionalProperties\": false,\n  \"required\": [\n    \"duration_minutes\",\n    \"window_start\",\n    \"window_end\",\n    \"topic\",\n    \"needs_clarification\"\n  ],\n  \"properties\": {\n    \"duration_minutes\": {\n      \"type\": \"integer\",\n      \"minimum\": 15,\n      \"maximum\": 120\n    },\n    \"window_start\": {\n      \"type\": \"string\",\n      \"description\": \"ISO 8601 start of the acceptable window\"\n    },\n    \"window_end\": {\n      \"type\": \"string\",\n      \"description\": \"ISO 8601 end of the acceptable window\"\n    },\n    \"topic\": {\n      \"type\": \"string\",\n      \"maxLength\": 120\n    },\n    \"needs_clarification\": {\n      \"type\": \"boolean\",\n      \"description\": \"true if no day or date can be inferred\"\n    }\n  }\n}"
+      },
+      "id": "bb0553b8-5643-52a3-a163-a24574e6e4c5",
+      "name": "Meeting schema",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        340,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "60355095-3d17-5f15-9e3f-c64e904a5aa4",
+              "leftValue": "={{ $json.output.needs_clarification }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "33561eb7-b9fd-552c-88b7-45aa546bbc48",
+      "name": "Clear request?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"status\": \"needs_clarification\", \"message\": \"Please include a day or date for the meeting.\" } }}",
+        "options": {
+          "responseCode": 422
+        }
+      },
+      "id": "50d2401c-db1b-5e0a-bf9d-33eb4cb3225f",
+      "name": "Ask for details",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        720,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "calendar",
+        "operation": "availability",
+        "calendar": {
+          "__rl": true,
+          "value": "={{ $env.SCHEDULING_CALENDAR_ID }}",
+          "mode": "id"
+        },
+        "timeMin": "={{ $json.output.window_start }}",
+        "timeMax": "={{ DateTime.fromISO($json.output.window_end).plus({ days: 3 }).toISO() }}",
+        "options": {
+          "outputFormat": "bookedSlots",
+          "timezone": "UTC"
+        }
+      },
+      "id": "c718e383-1a97-5f8a-8c40-7626b44288d2",
+      "name": "Check calendar",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.2,
+      "position": [
+        720,
+        300
+      ],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": null,
+          "name": "Google Calendar account"
+        }
+      },
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Busy slots come from the Google Calendar availability check; the window comes from the parser.\n// Slot arithmetic is done here, in code, rather than by the model.\nconst req = $('Parse request').first().json.output;\nconst busy = $input.all()\n  .map((i) => i.json)\n  .filter((b) => b.start && b.end)\n  .map((b) => [Date.parse(b.start), Date.parse(b.end)]);\nconst MIN = 60 * 1000;\nconst dur = req.duration_minutes * MIN;\nconst step = 30 * MIN;\nconst WORK_START = 9 * 60; // working hours in minutes after midnight (UTC; adjust for your calendar)\nconst WORK_END = 17 * 60;\n\nconst inHours = (t) => {\n  const d = new Date(t);\n  const day = d.getUTCDay();\n  const start = d.getUTCHours() * 60 + d.getUTCMinutes();\n  return day >= 1 && day <= 5 && start >= WORK_START && start + req.duration_minutes <= WORK_END;\n};\nconst isFree = (t) => busy.every(([s, e]) => t + dur <= s || t >= e);\nconst align = (t) => Math.ceil(t / step) * step;\nconst iso = (t) => new Date(t).toISOString();\n\nconst earliest = align(Math.max(Date.parse(req.window_start), Date.parse($now.toISO())));\nconst latest = Date.parse(req.window_end);\nlet slot = null;\nfor (let t = earliest; t + dur <= latest; t += step) {\n  if (inHours(t) && isFree(t)) { slot = t; break; }\n}\nconst alternatives = [];\nif (slot === null) {\n  const horizon = latest + 3 * 24 * 60 * MIN;\n  for (let t = align(Math.max(latest, earliest)); t + dur <= horizon && alternatives.length < 3; t += step) {\n    const spaced = alternatives.every((a) => Math.abs(Date.parse(a.start) - t) >= 3 * 60 * MIN);\n    if (inHours(t) && isFree(t) && spaced) alternatives.push({ start: iso(t), end: iso(t + dur) });\n  }\n}\nreturn [{\n  json: {\n    found: slot !== null,\n    start: slot === null ? '' : iso(slot),\n    end: slot === null ? '' : iso(slot + dur),\n    duration_minutes: req.duration_minutes,\n    topic: req.topic,\n    alternatives,\n    busy_slots_checked: busy.length,\n  },\n}];\n"
+      },
+      "id": "3664a96c-11eb-56ea-b472-682eb17637dd",
+      "name": "Find free slot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "19b0a256-a6a8-5409-ba74-eb771459f026",
+              "leftValue": "={{ $json.found }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d47748db-a5f8-5a7d-9c79-bb796de97f91",
+      "name": "Slot found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "calendar": {
+          "__rl": true,
+          "value": "={{ $env.SCHEDULING_CALENDAR_ID }}",
+          "mode": "id"
+        },
+        "start": "={{ $json.start }}",
+        "end": "={{ $json.end }}",
+        "additionalFields": {
+          "summary": "={{ $json.topic }}",
+          "attendees": [
+            "={{ $('Meeting request').first().json.body.requester_email }}"
+          ],
+          "description": "=Booked from: {{ $('Meeting request').first().json.body.request_text }}"
+        }
+      },
+      "id": "1531ba95-7a08-55db-b7eb-f510c5a73bf1",
+      "name": "Create event",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.2,
+      "position": [
+        1440,
+        180
+      ],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": null,
+          "name": "Google Calendar account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Meeting request').first().json.body.requester_email }}",
+        "subject": "=Booked: {{ $('Find free slot').item.json.topic }}",
+        "emailType": "text",
+        "message": "=Your meeting is booked for {{ $('Find free slot').item.json.start }} ({{ $('Find free slot').item.json.duration_minutes }} minutes, UTC). A calendar invite is on its way.",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "95df0662-8423-5519-90da-c34703dd9af8",
+      "name": "Confirm by email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1680,
+        180
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": null,
+          "name": "Gmail account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"status\": \"booked\", \"start\": $('Find free slot').item.json.start, \"end\": $('Find free slot').item.json.end } }}",
+        "options": {
+          "responseCode": 201
+        }
+      },
+      "id": "c7561faf-bb55-5916-987c-9e33d322d533",
+      "name": "Respond booked",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1920,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Meeting request').first().json.body.requester_email }}",
+        "subject": "=Times for: {{ $json.topic }}",
+        "emailType": "text",
+        "message": "=Nothing was free in the window you asked for. These times are open (UTC):\n{{ $json.alternatives.map(a => '- ' + a.start).join('\\n') }}\nReply with the one that suits you.",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "5c1a35bc-9215-53db-80d8-dfa657e8d272",
+      "name": "Offer alternatives",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1440,
+        420
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": null,
+          "name": "Gmail account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"status\": \"alternatives_offered\", \"alternatives\": $('Find free slot').item.json.alternatives } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "6699a481-f5bd-5cd2-a268-38bfed841652",
+      "name": "Respond alternatives",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1680,
+        420
+      ]
+    }
+  ],
+  "connections": {
+    "Meeting request": {
+      "main": [
+        [
+          {
+            "node": "Parse request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Parse request",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Meeting schema": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Parse request",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse request": {
+      "main": [
+        [
+          {
+            "node": "Clear request?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear request?": {
+      "main": [
+        [
+          {
+            "node": "Check calendar",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ask for details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check calendar": {
+      "main": [
+        [
+          {
+            "node": "Find free slot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find free slot": {
+      "main": [
+        [
+          {
+            "node": "Slot found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slot found?": {
+      "main": [
+        [
+          {
+            "node": "Create event",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Offer alternatives",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create event": {
+      "main": [
+        [
+          {
+            "node": "Confirm by email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confirm by email": {
+      "main": [
+        [
+          {
+            "node": "Respond booked",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Offer alternatives": {
+      "main": [
+        [
+          {
+            "node": "Respond alternatives",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "ErrHandlerShared"
+  },
+  "pinData": {},
+  "versionId": "41fbef01-89fd-5a5a-997f-eafecde63552",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "id": "MeetingScheduler",
+  "tags": []
+}

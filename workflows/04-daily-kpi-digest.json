@@ -1,0 +1,341 @@
+{
+  "name": "Daily KPI digest",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Daily KPI digest\nEvery weekday at 08:00 it pulls yesterday's order and support metrics from two HTTP APIs, merges them, computes per-team KPIs and anomaly flags in a Code node, emails each team lead (Loop Over Items, one team at a time) and posts one summary to Slack.",
+        "height": 220,
+        "width": 560,
+        "color": 7
+      },
+      "id": "6963534a-ea73-5631-8a2a-31bf8b6263d9",
+      "name": "About this workflow",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "7a84719c-bdef-5bdf-b8fc-54bcd889ea7f",
+      "name": "Every weekday 08:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.METRICS_API_URL }}/metrics/orders",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "date",
+              "value": "={{ $now.minus({ days: 1 }).toFormat('yyyy-MM-dd') }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "2021e550-404b-522d-af76-f1968d9bde4d",
+      "name": "Fetch order metrics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        180
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": null,
+          "name": "Metrics API key"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.METRICS_API_URL }}/metrics/support",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "date",
+              "value": "={{ $now.minus({ days: 1 }).toFormat('yyyy-MM-dd') }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "0bcda086-10d3-5739-b301-9b9344cba93a",
+      "name": "Fetch support metrics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        420
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": null,
+          "name": "Metrics API key"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "ecac821b-fc1c-5f12-905a-630b0056edf7",
+      "name": "Combine metrics",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        480,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// One item per team: yesterday's numbers, change against the 7-day average, and simple anomaly rules.\nconst m = $input.first().json;\nconst support = Object.fromEntries((m.support_by_team || []).map((s) => [s.team, s]));\nconst change = (now, avg) => (avg ? (now - avg) / avg : 0);\nreturn (m.orders_by_team || []).map((o) => {\n  const s = support[o.team] || {};\n  const revenueChange = change(o.revenue, o.revenue_7d_avg);\n  const frtChange = change(s.first_response_min, s.first_response_7d_avg);\n  const refundRate = o.orders ? o.refunds / o.orders : 0;\n  const anomalies = [];\n  if (revenueChange <= -0.2) anomalies.push(`revenue ${Math.round(revenueChange * 100)}% vs 7-day avg`);\n  if (frtChange >= 0.3) anomalies.push(`first response time +${Math.round(frtChange * 100)}%`);\n  if (refundRate > 0.05) anomalies.push(`refund rate ${(refundRate * 100).toFixed(1)}%`);\n  const lines = [\n    `Orders: ${o.orders} (refunds ${o.refunds})`,\n    `Revenue: ${o.revenue.toFixed(2)} (${revenueChange >= 0 ? '+' : ''}${(revenueChange * 100).toFixed(1)}% vs 7-day avg)`,\n    `Tickets: ${s.tickets_opened} opened, ${s.tickets_closed} closed`,\n    `First response: ${s.first_response_min} min (7-day avg ${s.first_response_7d_avg})`,\n    anomalies.length ? `Needs attention: ${anomalies.join('; ')}` : 'No anomalies.',\n  ];\n  return {\n    json: {\n      team: o.team,\n      date: m.date,\n      lead_email: o.lead_email,\n      orders: o.orders,\n      revenue: o.revenue,\n      revenue_change_pct: Math.round(revenueChange * 1000) / 10,\n      refund_rate_pct: Math.round(refundRate * 1000) / 10,\n      tickets_opened: s.tickets_opened,\n      first_response_min: s.first_response_min,\n      anomalies,\n      email_text: lines.join('\\n'),\n    },\n  };\n});\n"
+      },
+      "id": "e774f19e-5bbb-590b-aa92-feb8151c3364",
+      "name": "Compute team KPIs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "1882ce35-19e4-56a2-81a3-d1f0d47a9017",
+      "name": "Loop over teams",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        960,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.lead_email }}",
+        "subject": "=Daily KPIs: {{ $json.team }}, {{ $json.date }}",
+        "emailType": "text",
+        "message": "={{ $json.email_text }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "42c2251b-94af-5b0f-bfe1-3ccf4af529c5",
+      "name": "Email team lead",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1200,
+        440
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": null,
+          "name": "Gmail account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// The loop's \"done\" output carries the Gmail results; the team data comes from the KPI node.\nconst teams = $('Compute team KPIs').all().map((i) => i.json);\nconst flagged = teams.filter((t) => t.anomalies.length > 0);\nconst date = teams.length ? teams[0].date : 'n/a';\nconst lines = flagged.map((t) => `- ${t.team}: ${t.anomalies.join('; ')}`);\nreturn [{\n  json: {\n    date,\n    teams_emailed: $input.all().length,\n    teams_flagged: flagged.length,\n    text: `KPI digest for ${date}: emailed ${$input.all().length} team leads. ` +\n      (flagged.length ? `${flagged.length} team(s) need attention:\\n${lines.join('\\n')}` : 'No anomalies.'),\n  },\n}];\n"
+      },
+      "id": "54d9d740-84ed-566f-b739-82f1ad22d219",
+      "name": "Build Slack summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "#kpi-digest",
+          "mode": "name"
+        },
+        "text": "={{ $json.text }}",
+        "otherOptions": {}
+      },
+      "id": "b3a99928-f1ea-5323-a4a4-6ad6c2bc1e5c",
+      "name": "Post summary to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1440,
+        160
+      ],
+      "credentials": {
+        "slackApi": {
+          "id": null,
+          "name": "Slack account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Every weekday 08:00": {
+      "main": [
+        [
+          {
+            "node": "Fetch order metrics",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch support metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch order metrics": {
+      "main": [
+        [
+          {
+            "node": "Combine metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch support metrics": {
+      "main": [
+        [
+          {
+            "node": "Combine metrics",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Combine metrics": {
+      "main": [
+        [
+          {
+            "node": "Compute team KPIs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute team KPIs": {
+      "main": [
+        [
+          {
+            "node": "Loop over teams",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop over teams": {
+      "main": [
+        [
+          {
+            "node": "Build Slack summary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Email team lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email team lead": {
+      "main": [
+        [
+          {
+            "node": "Loop over teams",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Slack summary": {
+      "main": [
+        [
+          {
+            "node": "Post summary to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "ErrHandlerShared"
+  },
+  "pinData": {},
+  "versionId": "6cab20f7-a14d-5cea-b3ea-4d908fbb8c2a",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "id": "DailyKpiDigest01",
+  "tags": []
+}

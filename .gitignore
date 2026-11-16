@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+*.egg-info/
+build/
+.env
+# demo outputs (the README images and docs/workflows are committed; the raw run data is not)
+/reports/
+/ci-out/

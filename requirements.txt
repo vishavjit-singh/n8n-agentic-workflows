@@ -1,0 +1,4 @@
+click>=8.1
+matplotlib>=3.8
+starlette>=0.40
+uvicorn>=0.29

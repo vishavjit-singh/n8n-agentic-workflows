@@ -1,0 +1,901 @@
+{
+  "name": "Support triage agent with human approval",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Support triage agent\nA help-desk form posts each ticket to the webhook (answered with 202 at once). A tools agent searches the knowledge base, looks up the order when one is mentioned, and returns a structured triage with a draft reply.\n\nConfident, routine answers are emailed. Anything flagged, or below 0.7 confidence, goes to Slack for approval and the workflow **waits** for the reviewer's click (4 h limit). Every outcome is logged to a sheet.",
+        "height": 300,
+        "width": 600,
+        "color": 7
+      },
+      "id": "ccc37bb8-5cc3-559b-8484-810bbbc2a2df",
+      "name": "About this workflow",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "support-ticket",
+        "responseMode": "onReceived",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "eeaec4b1-7805-5328-b132-d78fb84b4eff",
+      "name": "Ticket webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "2c2bf4f8-fec2-54bb-ac3e-d8b2ca30937b"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "37171488-eeb2-5a6a-87f6-52c445760677",
+              "name": "ticket_id",
+              "value": "={{ $json.body.ticket_id }}",
+              "type": "string"
+            },
+            {
+              "id": "dfb3bf58-fef0-57b7-963d-602d3e2081f6",
+              "name": "customer_email",
+              "value": "={{ $json.body.email.trim().toLowerCase() }}",
+              "type": "string"
+            },
+            {
+              "id": "ed3559b5-e25e-57ae-aa2a-850faea42511",
+              "name": "subject",
+              "value": "={{ $json.body.subject }}",
+              "type": "string"
+            },
+            {
+              "id": "07fe4564-a226-5a98-81a4-bbf1ff9d7f0f",
+              "name": "body",
+              "value": "={{ $json.body.message }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "2ddea634-f618-5692-a7b7-c8b7a0f52229",
+      "name": "Ticket fields",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Ticket {{ $json.ticket_id }} from {{ $json.customer_email }}\nSubject: {{ $json.subject }}\n\n{{ $json.body }}",
+        "hasOutputParser": true,
+        "options": {
+          "maxIterations": 6,
+          "systemMessage": "You triage customer support tickets for an online store. Always search the knowledge base before answering and cite the article IDs you used. If the ticket mentions an order ID (format ORD-12345), look it up. Draft a short, polite reply based only on the articles and the order record. Never promise refunds, credits or dates that the sources do not support. Set needs_human to true for refund requests, chargebacks, legal threats, account security issues, or when you are unsure. Set confidence to how well the sources answer the question."
+        }
+      },
+      "id": "773675f9-e9c2-5878-a480-002e81e320c3",
+      "name": "Triage agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        480,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "id": "5deff111-3c53-5acf-b45e-72f40cf60523",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [
+        220,
+        580
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": null,
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $json.customer_email }}",
+        "contextWindowLength": 6
+      },
+      "id": "636be152-3c6f-5e41-beae-87396be85649",
+      "name": "Conversation memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.2,
+      "position": [
+        410,
+        580
+      ]
+    },
+    {
+      "parameters": {
+        "toolDescription": "Search the help-centre knowledge base. Returns up to 3 articles with id, title, body and a relevance score between 0 and 1.",
+        "url": "={{ $env.HELPDESK_API_URL }}/kb/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "parametersQuery": {
+          "values": [
+            {
+              "name": "q",
+              "valueProvider": "modelRequired",
+              "description": "a few keywords describing the customer's problem"
+            }
+          ]
+        }
+      },
+      "id": "95bd679d-0b0f-59e9-9354-3ab729a5e058",
+      "name": "Search knowledge base",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [
+        600,
+        580
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": null,
+          "name": "Helpdesk API key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "toolDescription": "Look up an order by ID (format ORD-12345). Returns status, carrier, total and dates.",
+        "url": "={{ $env.HELPDESK_API_URL }}/orders/{order_id}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "placeholderDefinitions": {
+          "values": [
+            {
+              "name": "order_id",
+              "description": "the order ID, e.g. ORD-10423",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "id": "20698123-bcc6-5393-945f-8584f9c12a34",
+      "name": "Look up order",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [
+        790,
+        580
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": null,
+          "name": "Helpdesk API key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"title\": \"ticket_triage\",\n  \"type\": \"object\",\n  \"additionalProperties\": false,\n  \"required\": [\n    \"category\",\n    \"priority\",\n    \"confidence\",\n    \"needs_human\",\n    \"reason\",\n    \"draft_reply\",\n    \"cited_articles\",\n    \"order_id\"\n  ],\n  \"properties\": {\n    \"category\": {\n      \"type\": \"string\",\n      \"enum\": [\n        \"billing\",\n        \"shipping\",\n        \"account\",\n        \"technical\",\n        \"other\"\n      ]\n    },\n    \"priority\": {\n      \"type\": \"string\",\n      \"enum\": [\n        \"low\",\n        \"normal\",\n        \"high\",\n        \"urgent\"\n      ]\n    },\n    \"confidence\": {\n      \"type\": \"number\",\n      \"minimum\": 0,\n      \"maximum\": 1\n    },\n    \"needs_human\": {\n      \"type\": \"boolean\"\n    },\n    \"reason\": {\n      \"type\": \"string\",\n      \"maxLength\": 300\n    },\n    \"draft_reply\": {\n      \"type\": \"string\",\n      \"maxLength\": 1500\n    },\n    \"cited_articles\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"string\"\n      },\n      \"maxItems\": 3\n    },\n    \"order_id\": {\n      \"type\": \"string\",\n      \"description\": \"Order ID mentioned in the ticket, or empty\"\n    }\n  }\n}"
+      },
+      "id": "81f518bc-84d9-52b1-ac16-ad1e001c1dfb",
+      "name": "Triage schema",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        980,
+        580
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "72daaeea-78e4-55b6-b06e-65ccdf91f0d2",
+              "leftValue": "={{ $json.output.needs_human }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "9446e0fc-015f-5148-9a5a-c53bb4b644b4",
+              "leftValue": "={{ $json.output.confidence }}",
+              "rightValue": 0.7,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "f8b88e00-d0b3-5b52-a33f-77de4e11f247",
+      "name": "Needs a human?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        800,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Ticket fields').item.json.customer_email }}",
+        "subject": "=Re: {{ $('Ticket fields').item.json.subject }} [{{ $('Ticket fields').item.json.ticket_id }}]",
+        "emailType": "text",
+        "message": "={{ $json.output.draft_reply }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "53c9b49b-09f9-55bc-8a74-4922d0fe5985",
+      "name": "Send reply",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1760,
+        120
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": null,
+          "name": "Gmail account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "#support-escalations",
+          "mode": "name"
+        },
+        "text": "=Ticket {{ $('Ticket fields').item.json.ticket_id }} needs review: {{ $json.output.category }}, priority {{ $json.output.priority }}, confidence {{ $json.output.confidence }}.\nReason: {{ $json.output.reason }}\n\nDraft reply:\n>>> {{ $json.output.draft_reply }}\n\nApprove and send: {{ $execution.resumeUrl }}?decision=approve\nHandle it myself: {{ $execution.resumeUrl }}?decision=reject",
+        "otherOptions": {}
+      },
+      "id": "b88f0296-ecdc-582c-9353-0ec5bc8304ae",
+      "name": "Ask for approval",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1040,
+        420
+      ],
+      "credentials": {
+        "slackApi": {
+          "id": null,
+          "name": "Slack account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "resume": "webhook",
+        "httpMethod": "GET",
+        "limitWaitTime": true,
+        "limitType": "afterTimeInterval",
+        "resumeAmount": 4,
+        "resumeUnit": "hours",
+        "options": {}
+      },
+      "id": "ffe4880b-3486-5a7e-a0de-59be71852866",
+      "name": "Wait for decision",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1280,
+        420
+      ],
+      "webhookId": "cf9ea361-ddfa-5805-98aa-a26106d72b15"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "ddd4edb8-1880-5590-9409-2b3ba8d533e8",
+              "leftValue": "={{ $json.query?.decision ?? '' }}",
+              "rightValue": "approve",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "0b0548b1-40c4-5166-84ce-fe917461ba48",
+      "name": "Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Ticket fields').item.json.customer_email }}",
+        "subject": "=Re: {{ $('Ticket fields').item.json.subject }} [{{ $('Ticket fields').item.json.ticket_id }}]",
+        "emailType": "text",
+        "message": "={{ $('Triage agent').item.json.output.draft_reply }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "51ccc5b6-3a18-557e-8f86-29f59172206b",
+      "name": "Send approved reply",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1760,
+        340
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": null,
+          "name": "Gmail account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "403e5af4-6fb5-5fd3-a2bc-a7cdd47e9f6a",
+              "name": "ticket_id",
+              "value": "={{ $('Ticket fields').item.json.ticket_id }}",
+              "type": "string"
+            },
+            {
+              "id": "0a82e234-9509-523f-9ea8-9d087831c974",
+              "name": "customer_email",
+              "value": "={{ $('Ticket fields').item.json.customer_email }}",
+              "type": "string"
+            },
+            {
+              "id": "828823ee-f4bf-5092-a4da-f91bacda6a99",
+              "name": "category",
+              "value": "={{ $('Triage agent').item.json.output.category }}",
+              "type": "string"
+            },
+            {
+              "id": "775f06ac-1441-55b2-bc6a-c90d9e0a3880",
+              "name": "priority",
+              "value": "={{ $('Triage agent').item.json.output.priority }}",
+              "type": "string"
+            },
+            {
+              "id": "840ef477-3b34-5eaf-acd3-b34e090d9223",
+              "name": "confidence",
+              "value": "={{ $('Triage agent').item.json.output.confidence }}",
+              "type": "number"
+            },
+            {
+              "id": "e0c512d4-526b-540e-9d8c-f20a2c07ad5b",
+              "name": "outcome",
+              "value": "auto_replied",
+              "type": "string"
+            },
+            {
+              "id": "f90647b0-025d-55fc-87f0-837525e6b74e",
+              "name": "handled_at",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "dd6d5ef9-5dfb-5471-956c-f0f7d1b0266d",
+      "name": "Mark auto-replied",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2000,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "0927077b-b4ab-5257-984d-9b7b05052747",
+              "name": "ticket_id",
+              "value": "={{ $('Ticket fields').item.json.ticket_id }}",
+              "type": "string"
+            },
+            {
+              "id": "e4b1a0f7-5a1f-574e-b382-165e35f5198b",
+              "name": "customer_email",
+              "value": "={{ $('Ticket fields').item.json.customer_email }}",
+              "type": "string"
+            },
+            {
+              "id": "7246351b-6a93-525b-9155-ef20b69a58ca",
+              "name": "category",
+              "value": "={{ $('Triage agent').item.json.output.category }}",
+              "type": "string"
+            },
+            {
+              "id": "98fc2b77-424c-59b9-870e-fa326b684d4d",
+              "name": "priority",
+              "value": "={{ $('Triage agent').item.json.output.priority }}",
+              "type": "string"
+            },
+            {
+              "id": "8f392879-bab9-5eb2-a968-ff8aa7ade2ad",
+              "name": "confidence",
+              "value": "={{ $('Triage agent').item.json.output.confidence }}",
+              "type": "number"
+            },
+            {
+              "id": "1ab4c1cd-b566-55ad-a92d-872807d4d152",
+              "name": "outcome",
+              "value": "approved_and_sent",
+              "type": "string"
+            },
+            {
+              "id": "94ccce33-1626-5a33-8514-d3efee7a3e71",
+              "name": "handled_at",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "4f9d3745-2be0-5eaa-9f31-f20c963b373a",
+      "name": "Mark approved",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2000,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "905b5669-eb9b-5e07-8239-58670b66722f",
+              "name": "ticket_id",
+              "value": "={{ $('Ticket fields').item.json.ticket_id }}",
+              "type": "string"
+            },
+            {
+              "id": "8410cc5c-156e-5ea9-896d-386a695cdc54",
+              "name": "customer_email",
+              "value": "={{ $('Ticket fields').item.json.customer_email }}",
+              "type": "string"
+            },
+            {
+              "id": "50abaf68-085b-57d6-b14b-da1428804e15",
+              "name": "category",
+              "value": "={{ $('Triage agent').item.json.output.category }}",
+              "type": "string"
+            },
+            {
+              "id": "9ed33f23-6024-5a8e-8a6b-d99818ffa79c",
+              "name": "priority",
+              "value": "={{ $('Triage agent').item.json.output.priority }}",
+              "type": "string"
+            },
+            {
+              "id": "8821d869-5277-53c0-adce-eef654839a51",
+              "name": "confidence",
+              "value": "={{ $('Triage agent').item.json.output.confidence }}",
+              "type": "number"
+            },
+            {
+              "id": "a0e47440-9ea7-5aec-9b12-e05dad35906c",
+              "name": "outcome",
+              "value": "assigned_to_human",
+              "type": "string"
+            },
+            {
+              "id": "386d9ebe-8210-5064-abc4-92917989d360",
+              "name": "handled_at",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "40249482-860c-5d3e-84e0-042d66fd9d14",
+      "name": "Mark for human",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1760,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.SUPPORT_LOG_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Triage log",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ticket_id": "={{ $json.ticket_id }}",
+            "customer_email": "={{ $json.customer_email }}",
+            "category": "={{ $json.category }}",
+            "priority": "={{ $json.priority }}",
+            "confidence": "={{ $json.confidence }}",
+            "outcome": "={{ $json.outcome }}",
+            "handled_at": "={{ $json.handled_at }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "ticket_id",
+              "displayName": "ticket_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "customer_email",
+              "displayName": "customer_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "priority",
+              "displayName": "priority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "confidence",
+              "displayName": "confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "outcome",
+              "displayName": "outcome",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "handled_at",
+              "displayName": "handled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c380ba43-d29c-5466-ad17-c6662c5a4959",
+      "name": "Log outcome",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2240,
+        340
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": null,
+          "name": "Google Sheets account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Ticket webhook": {
+      "main": [
+        [
+          {
+            "node": "Ticket fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ticket fields": {
+      "main": [
+        [
+          {
+            "node": "Triage agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Triage agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Conversation memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "Triage agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search knowledge base": {
+      "ai_tool": [
+        [
+          {
+            "node": "Triage agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Look up order": {
+      "ai_tool": [
+        [
+          {
+            "node": "Triage agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Triage schema": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Triage agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Triage agent": {
+      "main": [
+        [
+          {
+            "node": "Needs a human?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs a human?": {
+      "main": [
+        [
+          {
+            "node": "Ask for approval",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send reply": {
+      "main": [
+        [
+          {
+            "node": "Mark auto-replied",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask for approval": {
+      "main": [
+        [
+          {
+            "node": "Wait for decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for decision": {
+      "main": [
+        [
+          {
+            "node": "Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved?": {
+      "main": [
+        [
+          {
+            "node": "Send approved reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark for human",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send approved reply": {
+      "main": [
+        [
+          {
+            "node": "Mark approved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark auto-replied": {
+      "main": [
+        [
+          {
+            "node": "Log outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark approved": {
+      "main": [
+        [
+          {
+            "node": "Log outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark for human": {
+      "main": [
+        [
+          {
+            "node": "Log outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "ErrHandlerShared"
+  },
+  "pinData": {},
+  "versionId": "9cb8e035-16c9-5ffb-969f-0c4ea6daa965",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "id": "SupportTriageAgt",
+  "tags": []
+}

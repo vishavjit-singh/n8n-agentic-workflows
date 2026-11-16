@@ -1,0 +1,818 @@
+{
+  "name": "Lead intake and qualification",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Lead intake and qualification\nA website form posts to the webhook. The lead is normalised and de-duplicated by an idempotency key, classified by an LLM into a fixed schema, scored by plain rules and routed by tier.\n\n- **hot**: Slack alert + Gmail reply draft\n- **warm**: nurture reply draft\n- **cold**: CRM row only\n\nReplies are saved as drafts for a person to send. Every lead lands in the CRM sheet first.",
+        "height": 300,
+        "width": 560,
+        "color": 7
+      },
+      "id": "fa8c4429-3e06-528b-8bbd-abb7ea56ab41",
+      "name": "About this workflow",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-intake",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "343c7e7a-25d1-5bdb-97cb-28555b9b0ec1",
+      "name": "Lead webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "93c42669-4f0f-56f9-a316-57db2b542c67"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalise the form payload and derive an idempotency key, so a resubmitted form is processed once.\nconst out = [];\nfor (const item of $input.all()) {\n  const b = item.json.body || {};\n  const email = String(b.email || '').trim().toLowerCase();\n  const message = String(b.message || '').trim();\n  // FNV-1a 32-bit hash of email + message: dependency-free and stable across runs\n  let h = 0x811c9dc5;\n  for (const ch of `${email}|${message.toLowerCase()}`) {\n    h ^= ch.charCodeAt(0);\n    h = Math.imul(h, 0x01000193) >>> 0;\n  }\n  out.push({\n    json: {\n      name: String(b.name || '').trim(),\n      email,\n      company: String(b.company || '').trim(),\n      company_size: Number(b.company_size) || 0,\n      budget_usd: Number(b.budget_usd) || 0,\n      source: String(b.source || 'website'),\n      message,\n      submitted_at: String(b.submitted_at || ''),\n      idempotency_key: `lead_${h.toString(16).padStart(8, '0')}`,\n    },\n  });\n}\nreturn out;\n"
+      },
+      "id": "3346bc3d-5bb8-5c29-b089-d19a075c2935",
+      "name": "Normalize lead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "4b4d45a0-76bc-5371-b010-fddbbde4adca",
+              "leftValue": "={{ $json.email }}",
+              "rightValue": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+              "operator": {
+                "type": "string",
+                "operation": "regex"
+              }
+            },
+            {
+              "id": "aef701a9-d327-5d5c-83dd-1b84b917b683",
+              "leftValue": "={{ $json.message }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a4732970-0116-59b8-ae1f-65cfb3e912b0",
+      "name": "Valid lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"status\": \"rejected\", \"reason\": \"a valid email and a message are required\" } }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "382c2b32-3052-5699-9c3a-f3c58bfb4680",
+      "name": "Reject invalid",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        720,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.CRM_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "lead_id",
+              "lookupValue": "={{ $json.idempotency_key }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a2470aff-16ef-5319-999c-abdbbf4708f5",
+      "name": "Find existing lead",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        720,
+        300
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": null,
+          "name": "Google Sheets account"
+        }
+      },
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "26d05f37-2bdf-5146-b1d5-b8999306f27b",
+              "leftValue": "={{ $json.lead_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c598d2f6-90e6-5569-8b6d-b8f184ce5256",
+      "name": "Already processed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        960,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"status\": \"duplicate\", \"lead_id\": $json.lead_id } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "eb103a37-5bb9-57ed-8867-156a5014d1e6",
+      "name": "Acknowledge duplicate",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1200,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Classify this inbound lead.\n\nName: {{ $('Normalize lead').item.json.name }}\nCompany: {{ $('Normalize lead').item.json.company }}\nCompany size: {{ $('Normalize lead').item.json.company_size }}\nBudget (USD): {{ $('Normalize lead').item.json.budget_usd }}\nSource: {{ $('Normalize lead').item.json.source }}\nMessage: {{ $('Normalize lead').item.json.message }}",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You qualify inbound leads for a small software consultancy. Use only the information in the lead. intent: purchase = wants to buy or get a quote; evaluation = researching or comparing; support = an existing customer with a problem; not_a_fit = students, job seekers, partnership pitches; spam = unsolicited offers. budget_band comes from the stated budget in USD (none if 0 or missing). urgency is high only for an explicit near deadline. Write a one-sentence summary for the sales team."
+            }
+          ]
+        }
+      },
+      "id": "911c04a7-dfa0-5fe1-a728-7fbb6b5947c9",
+      "name": "Classify lead",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.4,
+      "position": [
+        1200,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "options": {
+          "temperature": 0
+        }
+      },
+      "id": "01f359d9-56fc-5b59-bca8-8c4f2a62e6c5",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [
+        1100,
+        560
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": null,
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"title\": \"lead_classification\",\n  \"type\": \"object\",\n  \"additionalProperties\": false,\n  \"required\": [\n    \"intent\",\n    \"budget_band\",\n    \"urgency\",\n    \"summary\"\n  ],\n  \"properties\": {\n    \"intent\": {\n      \"type\": \"string\",\n      \"enum\": [\n        \"purchase\",\n        \"evaluation\",\n        \"support\",\n        \"not_a_fit\",\n        \"spam\"\n      ],\n      \"description\": \"What the sender wants\"\n    },\n    \"budget_band\": {\n      \"type\": \"string\",\n      \"enum\": [\n        \"none\",\n        \"under_5k\",\n        \"5k_25k\",\n        \"over_25k\"\n      ],\n      \"description\": \"Stated budget in USD; none if not stated\"\n    },\n    \"urgency\": {\n      \"type\": \"string\",\n      \"enum\": [\n        \"low\",\n        \"medium\",\n        \"high\"\n      ]\n    },\n    \"summary\": {\n      \"type\": \"string\",\n      \"maxLength\": 200,\n      \"description\": \"One sentence for the sales team\"\n    }\n  }\n}"
+      },
+      "id": "2902fdab-0ef1-55db-b572-b6942d659905",
+      "name": "Lead schema",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        1300,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Deterministic scoring on top of the model's labels: the LLM classifies, the rules decide the tier.\nconst lead = $('Normalize lead').item.json;\nconst c = $json.output;\nconst intentPts = { purchase: 40, evaluation: 25, support: 5, not_a_fit: 0, spam: 0 }[c.intent] ?? 0;\nconst budgetPts = { over_25k: 30, '5k_25k': 20, under_5k: 8, none: 0 }[c.budget_band] ?? 0;\nconst urgencyPts = { high: 15, medium: 8, low: 0 }[c.urgency] ?? 0;\nconst size = lead.company_size;\nconst sizePts = size >= 200 ? 15 : size >= 20 ? 10 : size > 0 ? 4 : 0;\nlet score = intentPts + budgetPts + urgencyPts + sizePts;\nif (c.intent === 'spam' || c.intent === 'not_a_fit') score = Math.min(score, 10);\nconst tier = score >= 70 ? 'hot' : score >= 40 ? 'warm' : 'cold';\nreturn {\n  json: {\n    ...lead,\n    lead_id: lead.idempotency_key,\n    intent: c.intent,\n    budget_band: c.budget_band,\n    urgency: c.urgency,\n    summary: c.summary,\n    score,\n    tier,\n    qualified_at: $now.toISO(),\n  },\n};\n"
+      },
+      "id": "5d97eb59-538a-5cdc-9f4e-593bfeb42d46",
+      "name": "Score lead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.CRM_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lead_id": "={{ $json.lead_id }}",
+            "qualified_at": "={{ $json.qualified_at }}",
+            "name": "={{ $json.name }}",
+            "email": "={{ $json.email }}",
+            "company": "={{ $json.company }}",
+            "company_size": "={{ $json.company_size }}",
+            "budget_usd": "={{ $json.budget_usd }}",
+            "source": "={{ $json.source }}",
+            "intent": "={{ $json.intent }}",
+            "budget_band": "={{ $json.budget_band }}",
+            "urgency": "={{ $json.urgency }}",
+            "score": "={{ $json.score }}",
+            "tier": "={{ $json.tier }}",
+            "summary": "={{ $json.summary }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "lead_id",
+              "displayName": "lead_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "qualified_at",
+              "displayName": "qualified_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "name",
+              "displayName": "name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "company",
+              "displayName": "company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "company_size",
+              "displayName": "company_size",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "budget_usd",
+              "displayName": "budget_usd",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "intent",
+              "displayName": "intent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "budget_band",
+              "displayName": "budget_band",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "urgency",
+              "displayName": "urgency",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "score",
+              "displayName": "score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "tier",
+              "displayName": "tier",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "summary",
+              "displayName": "summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "262ac5c3-758c-5198-bbdf-bde7d7ee5852",
+      "name": "Append CRM row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1680,
+        300
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": null,
+          "name": "Google Sheets account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"status\": \"accepted\", \"lead_id\": $('Score lead').item.json.lead_id, \"tier\": $('Score lead').item.json.tier } }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "236de29a-19f3-5134-b22d-7922f1e1ae93",
+      "name": "Accept lead",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1920,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "dd37fdff-a08b-57b3-9b84-c43a00abc47a",
+                    "leftValue": "={{ $('Score lead').item.json.tier }}",
+                    "rightValue": "hot",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "hot"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "4f90190f-a3ea-5bf8-b79c-62b57799feda",
+                    "leftValue": "={{ $('Score lead').item.json.tier }}",
+                    "rightValue": "warm",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "warm"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "cold"
+        }
+      },
+      "id": "a7bfd30d-a3c1-52bf-ba0f-37b365450346",
+      "name": "Route by tier",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        2160,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "#sales-hot-leads",
+          "mode": "name"
+        },
+        "text": "=Hot lead ({{ $('Score lead').item.json.score }}/100): *{{ $('Score lead').item.json.name }}*, {{ $('Score lead').item.json.company }} ({{ $('Score lead').item.json.company_size }} people)\n{{ $('Score lead').item.json.summary }}\nReply draft is waiting in Gmail.",
+        "otherOptions": {}
+      },
+      "id": "2ec9f086-4a88-5ad3-a344-1d4fc4440171",
+      "name": "Alert sales on Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        2400,
+        120
+      ],
+      "credentials": {
+        "slackApi": {
+          "id": null,
+          "name": "Slack account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "resource": "draft",
+        "subject": "=Re: your enquiry - next steps",
+        "emailType": "text",
+        "message": "=Hi {{ $('Score lead').item.json.name }},\n\nThanks for getting in touch about {{ $('Score lead').item.json.company }}. From your message: {{ $('Score lead').item.json.summary }}\n\nCould we book a 30-minute call this week to scope it? Reply with two times that suit you.\n\nBest regards",
+        "options": {
+          "sendTo": "={{ $('Score lead').item.json.email }}"
+        }
+      },
+      "id": "107cb6ad-b6af-58e0-89ab-1043554d7943",
+      "name": "Draft reply (hot)",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2400,
+        300
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": null,
+          "name": "Gmail account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "resource": "draft",
+        "subject": "=Thanks for your enquiry",
+        "emailType": "text",
+        "message": "=Hi {{ $('Score lead').item.json.name }},\n\nThanks for reaching out. I have attached a short overview of how we usually run projects like this. When you are ready to talk scope or budget, just reply here.\n\nBest regards",
+        "options": {
+          "sendTo": "={{ $('Score lead').item.json.email }}"
+        }
+      },
+      "id": "8691852d-9df3-5e44-a57d-b5bbdc3cf1fd",
+      "name": "Draft nurture reply",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2400,
+        480
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": null,
+          "name": "Gmail account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {},
+      "id": "92d482d6-e773-5e8a-be2b-ba2ea5430409",
+      "name": "No action (cold)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2400,
+        660
+      ]
+    }
+  ],
+  "connections": {
+    "Lead webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize lead": {
+      "main": [
+        [
+          {
+            "node": "Valid lead?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid lead?": {
+      "main": [
+        [
+          {
+            "node": "Find existing lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject invalid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find existing lead": {
+      "main": [
+        [
+          {
+            "node": "Already processed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already processed?": {
+      "main": [
+        [
+          {
+            "node": "Acknowledge duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Classify lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Classify lead",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lead schema": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Classify lead",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify lead": {
+      "main": [
+        [
+          {
+            "node": "Score lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score lead": {
+      "main": [
+        [
+          {
+            "node": "Append CRM row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append CRM row": {
+      "main": [
+        [
+          {
+            "node": "Accept lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Accept lead": {
+      "main": [
+        [
+          {
+            "node": "Route by tier",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by tier": {
+      "main": [
+        [
+          {
+            "node": "Alert sales on Slack",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Draft reply (hot)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Draft nurture reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No action (cold)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "ErrHandlerShared"
+  },
+  "pinData": {},
+  "versionId": "92a8efc9-a9c6-5cc1-9da8-f6881b07873c",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "id": "LeadIntakeQualif",
+  "tags": []
+}

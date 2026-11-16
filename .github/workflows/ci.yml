@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: lint, tests, demo (simulator)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - uses: actions/setup-node@v4          # Code nodes run in Node.js inside the simulator
+        with:
+          node-version: "20"
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: PYTHONPATH=src python -m n8nkit validate --strict
+      - run: pytest -q
+      - run: make demo
+      - uses: actions/upload-artifact@v4
+        if: matrix.python-version == '3.12'
+        with:
+          name: demo-output
+          path: |
+            docs/images/
+            docs/workflows/
+            reports/
+
+  n8n-import:
+    name: import into a real n8n (docker compose)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create .env with throwaway secrets
+        run: |
+          cp .env.example .env
+          sed -i "s/^N8N_ENCRYPTION_KEY=.*/N8N_ENCRYPTION_KEY=$(openssl rand -hex 24)/" .env
+          sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 16)/" .env
+      - name: Start postgres and the mock API
+        run: docker compose up -d --build postgres mock-services
+      - name: Import every workflow with the n8n CLI
+        run: docker compose run --rm n8n-import
+      - name: Export from n8n and compare with workflows/
+        run: |
+          mkdir -p ci-out && chmod 777 ci-out
+          docker compose run --rm --no-deps -v "$PWD/ci-out:/out" n8n export:workflow --all --output=/out/all.json
+          python3 - <<'PY'
+          import json, pathlib
+          exported = json.load(open("ci-out/all.json"))
+          files = [json.loads(p.read_text()) for p in sorted(pathlib.Path("workflows").glob("*.json"))]
+          expected = {w["id"]: w for w in files}
+          got = {w["id"]: w for w in exported}
+          print(f"exported {len(got)} workflows, expected {len(expected)}")
+          assert set(got) == set(expected), (set(expected) - set(got), set(got) - set(expected))
+          for wid, w in expected.items():
+              assert len(got[wid]["nodes"]) == len(w["nodes"]), wid
+              assert got[wid]["settings"].get("errorWorkflow") == w["settings"].get("errorWorkflow"), wid
+              print(f"  {wid}: {got[wid]['name']} ({len(got[wid]['nodes'])} nodes)")
+          PY
+      - name: Import again (ids are kept, so the count must not change)
+        run: |
+          docker compose run --rm n8n-import
+          docker compose run --rm --no-deps -v "$PWD/ci-out:/out" n8n export:workflow --all --output=/out/again.json
+          python3 -c "import json; n=len(json.load(open('ci-out/again.json'))); print(n); assert n == 5"
+      - name: Start n8n and wait for it to be healthy
+        run: |
+          docker compose up -d n8n
+          for i in $(seq 1 60); do curl -sf localhost:5678/healthz && break; sleep 2; done
+          curl -sf localhost:5678/healthz
+      - name: Mock API answers the agent's tool calls
+        run: |
+          curl -sf "localhost:8080/kb/search?q=refund" | python3 -m json.tool
+          curl -sf localhost:8080/orders/ORD-10004
+      - if: failure()
+        run: docker compose logs

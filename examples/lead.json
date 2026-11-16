@@ -1,0 +1,10 @@
+{
+  "name": "Asha Rao",
+  "email": "asha.rao@northwind.example",
+  "company": "Northwind Labs",
+  "company_size": 250,
+  "budget_usd": 40000,
+  "source": "website",
+  "message": "We need a quote to build us a reporting dashboard. We need this ASAP.",
+  "submitted_at": "2026-11-16T08:00:00Z"
+}
